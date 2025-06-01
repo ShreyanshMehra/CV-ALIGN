@@ -1,0 +1,32 @@
+.container {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 2rem;
+  font-family: sans-serif;
+}
+.upload-grid {
+  display: flex;
+  gap: 2rem;
+  margin-bottom: 2rem;
+}
+.upload-section {
+  border: 1px solid #ddd;
+  padding: 1rem;
+  border-radius: 8px;
+}
+.status-section, .scoring-section {
+  margin-top: 2rem;
+}
+.error {
+  color: red;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+}
+th, td {
+  border: 1px solid #bbb;
+  padding: 0.5rem;
+  text-align: left;
+}
