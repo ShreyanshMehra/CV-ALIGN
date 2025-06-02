@@ -205,117 +205,130 @@ async def upload_jd(file: UploadFile = File(...)):
 
 @app.post("/score-cvs/")
 async def score_cvs(background_tasks: BackgroundTasks):
-    """Enhanced scoring with better error handling and validation."""
+    """Enhanced scoring with semantic similarity + weighted keyword matching."""
+
     if not cv_store.jd:
         raise HTTPException(status_code=400, detail="Please upload a Job Description first")
-    
     if not cv_store.cvs:
         raise HTTPException(status_code=400, detail="Please upload at least one CV")
-    
+
     # Validate JD text quality
     jd_word_count = len(cv_store.jd.split())
     if jd_word_count < 10:
         raise HTTPException(
-            status_code=400, 
+            status_code=400,
             detail="Job Description is too short for meaningful analysis. Please upload a more detailed JD."
         )
-    
+
+    # --- Extract weighted keywords from JD ---
     try:
-        results = []
-        detailed_results = {}
-        processing_errors = []
-        
-        for cv_id, cv_text in cv_store.cvs.items():
-            try:
-                logger.info(f"Processing CV: {cv_id}")
-                
-                # Validate CV text
-                cv_word_count = len(cv_text.split())
-                if cv_word_count < 10:
-                    error_msg = f"CV {cv_id} is too short for analysis"
-                    processing_errors.append(error_msg)
-                    results.append({
-                        "cv_id": cv_id,
-                        "error": error_msg,
-                        "filename": cv_store.metadata[cv_id]["filename"]
-                    })
-                    continue
-                
-                # Calculate comprehensive score
-                score_data = cv_store.rag_engine.calculate_comprehensive_score(cv_text, cv_store.jd)
-                
-                if "error" in score_data:
-                    error_msg = f"Scoring failed for CV {cv_id}: {score_data['error']}"
-                    processing_errors.append(error_msg)
-                    results.append({
-                        "cv_id": cv_id,
-                        "error": score_data["error"],
-                        "filename": cv_store.metadata[cv_id]["filename"]
-                    })
-                    continue
-                
-                # Process successful results...
-                final_score = score_data["final_score"]
-                if final_score >= 0.8:
-                    match_quality = "Excellent Match"
-                elif final_score >= 0.65:
-                    match_quality = "Good Match"
-                elif final_score >= 0.5:
-                    match_quality = "Fair Match"
-                else:
-                    match_quality = "Poor Match"
-                
-                cv_result = {
-                    "cv_id": cv_id,
-                    "filename": cv_store.metadata[cv_id]["filename"],
-                    "final_score": round(final_score * 100, 2),
-                    "match_quality": match_quality,
-                    "max_similarity": round(score_data["max_similarity"] * 100, 2),
-                    "avg_similarity": round(score_data["avg_similarity"] * 100, 2),
-                    "coverage_score": round(score_data["coverage_score"] * 100, 2)
-                }
-                
-                results.append(cv_result)
-                detailed_results[cv_id] = score_data
-                
-            except Exception as e:
-                error_msg = f"Unexpected error processing CV {cv_id}: {str(e)}"
-                logger.error(error_msg)
+        jd_keywords_with_weights = EnhancedRAGEngine.extract_jd_keywords_with_weights(cv_store.jd, top_n=20)
+    except Exception as e:
+        logger.error(f"Error extracting JD keywords: {e}")
+        raise HTTPException(status_code=500, detail="Failed to extract keywords from JD.")
+
+    results = []
+    detailed_results = {}
+    processing_errors = []
+
+    for cv_id, cv_text in cv_store.cvs.items():
+        try:
+            logger.info(f"Processing CV: {cv_id}")
+
+            # Validate CV text
+            cv_word_count = len(cv_text.split())
+            if cv_word_count < 10:
+                error_msg = f"CV {cv_id} is too short for analysis"
                 processing_errors.append(error_msg)
                 results.append({
                     "cv_id": cv_id,
-                    "error": str(e),
+                    "error": error_msg,
                     "filename": cv_store.metadata[cv_id]["filename"]
                 })
-        
-        # Check if we have any successful results
-        successful_results = [r for r in results if "error" not in r]
-        if not successful_results:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Failed to process any CVs successfully. Errors: {'; '.join(processing_errors)}"
+                continue
+
+            # --- Semantic similarity score ---
+            score_data = cv_store.rag_engine.calculate_comprehensive_score(cv_text, cv_store.jd)
+            if "error" in score_data:
+                error_msg = f"Scoring failed for CV {cv_id}: {score_data['error']}"
+                processing_errors.append(error_msg)
+                results.append({
+                    "cv_id": cv_id,
+                    "error": score_data["error"],
+                    "filename": cv_store.metadata[cv_id]["filename"]
+                })
+                continue
+
+            semantic_score = score_data["final_score"] * 100  # Convert to 0-100 scale
+
+            # --- Weighted keyword match score ---
+            keyword_score = EnhancedRAGEngine.score_cv_by_weighted_keywords(cv_text, jd_keywords_with_weights)
+
+            # --- Combine scores (70% semantic, 30% keyword) ---
+            final_score = EnhancedRAGEngine.combine_scores(
+                semantic_score, keyword_score, semantic_weight=0.8, keyword_weight=0.2
             )
-        
-        # Sort successful results by score
-        successful_results.sort(key=lambda x: x.get("final_score", 0), reverse=True)
-        
-        return {
-            "ranked_candidates": results,
-            "summary": {
-                "total_cvs_processed": len(cv_store.cvs),
-                "successful_processing": len(successful_results),
-                "failed_processing": len(processing_errors),
-                "highest_score": max([r.get("final_score", 0) for r in successful_results], default=0),
-                "average_score": round(sum([r.get("final_score", 0) for r in successful_results]) / len(successful_results) if successful_results else 0, 2),
-                "processing_errors": processing_errors if processing_errors else None
+
+            # Determine match quality
+            if final_score >= 80:
+                match_quality = "Excellent Match"
+            elif final_score >= 65:
+                match_quality = "Good Match"
+            elif final_score >= 50:
+                match_quality = "Fair Match"
+            else:
+                match_quality = "Poor Match"
+
+            cv_result = {
+                "cv_id": cv_id,
+                "filename": cv_store.metadata[cv_id]["filename"],
+                "final_score": round(final_score, 2),
+                "match_quality": match_quality,
+                "semantic_score": round(semantic_score, 2),
+                "keyword_score": round(keyword_score, 2),
+                "max_similarity": round(score_data["max_similarity"] * 100, 2),
+                "avg_similarity": round(score_data["avg_similarity"] * 100, 2),
+                "coverage_score": round(score_data["coverage_score"] * 100, 2)
             }
+
+            results.append(cv_result)
+            detailed_results[cv_id] = score_data
+
+        except Exception as e:
+            error_msg = f"Unexpected error processing CV {cv_id}: {str(e)}"
+            logger.error(error_msg)
+            processing_errors.append(error_msg)
+            results.append({
+                "cv_id": cv_id,
+                "error": str(e),
+                "filename": cv_store.metadata[cv_id]["filename"]
+            })
+
+    # Check if we have any successful results
+    successful_results = [r for r in results if "error" not in r]
+    if not successful_results:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to process any CVs successfully. Errors: {'; '.join(processing_errors)}"
+        )
+
+    # Sort successful results by score
+    successful_results.sort(key=lambda x: x.get("final_score", 0), reverse=True)
+
+    return {
+        "ranked_candidates": results,
+        "summary": {
+            "total_cvs_processed": len(cv_store.cvs),
+            "successful_processing": len(successful_results),
+            "failed_processing": len(processing_errors),
+            "highest_score": max([r.get("final_score", 0) for r in successful_results], default=0),
+            "average_score": round(
+                sum([r.get("final_score", 0) for r in successful_results]) / len(successful_results)
+                if successful_results else 0, 2
+            ),
+            "processing_errors": processing_errors if processing_errors else None
         }
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Critical error during CV scoring: {e}")
-        raise HTTPException(status_code=500, detail=f"Critical error during scoring: {str(e)}")
+    }
 
 @app.delete("/clear-data/")
 async def clear_data():
