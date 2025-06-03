@@ -1,10 +1,14 @@
 fastapi
 uvicorn
 python-multipart
-pymupdf
+pdfplumber
 python-docx
 cloudinary
 python-dotenv
 langchain
 openai
 faiss-cpu
+keybert
+sentence-transformers
+numpy
+scikit-learn

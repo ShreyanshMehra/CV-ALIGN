@@ -1,25 +1,21 @@
-# enhanced_main.py
 from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import uuid
 import pdfplumber
 from docx import Document
-from typing import Dict, Optional, List
+from typing import Dict, Optional
 import logging
 from datetime import datetime
-import json
-from dataclasses import asdict
+import re
 
 from rag_engine import EnhancedRAGEngine, ChunkConfig
 
-# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Enhanced CV Scoring System", version="2.0.0")
+app = FastAPI(title="Enhanced CV Scoring System", version="2.1.0")
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -29,11 +25,8 @@ app.add_middleware(
 )
 
 UPLOAD_DIR = "uploads"
-RESULTS_DIR = "results"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(RESULTS_DIR, exist_ok=True)
 
-# Enhanced storage for CVs and JD
 class CVStore:
     def __init__(self):
         self.cvs: Dict[str, str] = {}
@@ -72,7 +65,6 @@ class CVStore:
 cv_store = CVStore()
 
 def extract_text_from_pdf(file_path: str) -> str:
-    """Enhanced PDF text extraction with better error handling."""
     text = ""
     try:
         with pdfplumber.open(file_path) as pdf:
@@ -83,96 +75,108 @@ def extract_text_from_pdf(file_path: str) -> str:
                         text += page_text + f"\n--- Page {page_num + 1} ---\n"
                 except Exception as e:
                     logger.warning(f"Could not extract text from page {page_num + 1}: {e}")
-                    continue
     except Exception as e:
         logger.error(f"Error reading PDF file: {e}")
         raise HTTPException(status_code=400, detail=f"Error reading PDF file: {str(e)}")
-    
     return text.strip()
 
 def extract_text_from_docx(file_path: str) -> str:
-    """Enhanced DOCX text extraction."""
     try:
         doc = Document(file_path)
-        paragraphs = []
-        for para in doc.paragraphs:
-            if para.text.strip():
-                paragraphs.append(para.text.strip())
-        
-        # Also extract text from tables
+        paragraphs = [para.text.strip() for para in doc.paragraphs if para.text.strip()]
         for table in doc.tables:
             for row in table.rows:
-                row_text = []
-                for cell in row.cells:
-                    if cell.text.strip():
-                        row_text.append(cell.text.strip())
+                row_text = [cell.text.strip() for cell in row.cells if cell.text.strip()]
                 if row_text:
                     paragraphs.append(" | ".join(row_text))
-        
         return "\n".join(paragraphs)
     except Exception as e:
         logger.error(f"Error reading DOCX file: {e}")
         raise HTTPException(status_code=400, detail=f"Error reading DOCX file: {str(e)}")
 
 def save_and_extract(file: UploadFile) -> tuple[str, str]:
-    """Enhanced file saving and text extraction."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
-    
     ext = file.filename.split(".")[-1].lower()
     if ext not in ["pdf", "docx"]:
         raise HTTPException(status_code=400, detail="Only PDF and DOCX files are supported")
-    
     filename = f"{uuid.uuid4()}.{ext}"
     path = os.path.join(UPLOAD_DIR, filename)
-    
     try:
         with open(path, "wb") as f:
             content = file.file.read()
             if len(content) == 0:
                 raise HTTPException(status_code=400, detail="Empty file uploaded")
             f.write(content)
-        
-        # Extract text based on file type
         if ext == "pdf":
             extracted_text = extract_text_from_pdf(path)
-        else:  # docx
+        else:
             extracted_text = extract_text_from_docx(path)
-        
         if not extracted_text.strip():
             raise HTTPException(status_code=400, detail="No text could be extracted from the file")
-        
         return extracted_text, filename
-    
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error processing file: {e}")
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
     finally:
-        # Clean up uploaded file
         if os.path.exists(path):
             try:
                 os.remove(path)
             except:
                 pass
 
+def extract_section(text: str, section_name: str) -> str:
+    pattern = rf"{section_name}[\s:\-]*\n?(.*?)(?=\n[A-Z][a-zA-Z ]{{2,20}}[\s:\-]*\n|$)"
+    match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+    return match.group(1).strip() if match else ""
+
+import re
+
+def extract_cgpa(text):
+    """
+    Extracts CGPA for B.Tech. from the education table/section.
+    Only returns a value between 0 and 10.
+    """
+    # Try to find a B.Tech. row with a CGPA value (not percentage)
+    pattern = r"B\.?Tech.*?CGPA\/?Percentage[^\d]{0,10}(\d{1,2}\.\d{1,2})"
+    match = re.search(pattern, text, re.IGNORECASE)
+    if match:
+        val = float(match.group(1))
+        if 0 < val <= 10:
+            return val
+    # Fallback: Look for B.Tech row with any number (avoid percentages >10)
+    row_pattern = r"B\.?Tech.*?(\d{1,2}\.\d{1,2})"
+    row_match = re.search(row_pattern, text, re.IGNORECASE)
+    if row_match:
+        val = float(row_match.group(1))
+        if 0 < val <= 10:
+            return val
+    return None
+
+def score_cgpa(cgpa, max_cgpa=10.0):
+    if cgpa and 0 < cgpa <= max_cgpa:
+        return round((cgpa / max_cgpa) * 100, 2)
+    else:
+        return 0.0
+
+
+
+
 @app.get("/")
 def read_root():
-    return {"message": "Enhanced CV Scoring System API", "version": "2.0.0"}
+    return {"message": "Enhanced CV Scoring System API", "version": "2.1.0"}
 
 @app.get("/status")
 def get_status():
-    """Get current system status."""
     return cv_store.get_status()
 
 @app.post("/upload-cv/")
 async def upload_cv(cv_id: str, file: UploadFile = File(...)):
-    """Upload a CV with custom ID."""
     try:
         text, filename = save_and_extract(file)
         cv_store.add_cv(cv_id, text, filename)
-        
         return {
             "message": f"CV {cv_id} uploaded successfully",
             "cv_id": cv_id,
@@ -187,11 +191,9 @@ async def upload_cv(cv_id: str, file: UploadFile = File(...)):
 
 @app.post("/upload-jd/")
 async def upload_jd(file: UploadFile = File(...)):
-    """Upload Job Description."""
     try:
         text, filename = save_and_extract(file)
         cv_store.set_jd(text, filename)
-        
         return {
             "message": "Job Description uploaded successfully",
             "filename": filename,
@@ -205,37 +207,37 @@ async def upload_jd(file: UploadFile = File(...)):
 
 @app.post("/score-cvs/")
 async def score_cvs(background_tasks: BackgroundTasks):
-    """Enhanced scoring with semantic similarity + weighted keyword matching."""
-
     if not cv_store.jd:
         raise HTTPException(status_code=400, detail="Please upload a Job Description first")
     if not cv_store.cvs:
         raise HTTPException(status_code=400, detail="Please upload at least one CV")
-
-    # Validate JD text quality
     jd_word_count = len(cv_store.jd.split())
     if jd_word_count < 10:
         raise HTTPException(
             status_code=400,
             detail="Job Description is too short for meaningful analysis. Please upload a more detailed JD."
         )
-
-    # --- Extract weighted keywords from JD ---
     try:
         jd_keywords_with_weights = EnhancedRAGEngine.extract_jd_keywords_with_weights(cv_store.jd, top_n=20)
     except Exception as e:
         logger.error(f"Error extracting JD keywords: {e}")
         raise HTTPException(status_code=500, detail="Failed to extract keywords from JD.")
 
+    # Section weights (must sum to 1.0)
+    WEIGHTS = {
+        "cv": 0.4,
+        "projects": 0.2,
+        "experience": 0.2,
+        "cgpa": 0.1,
+        "techskills": 0.1
+    }
+
     results = []
-    detailed_results = {}
     processing_errors = []
 
     for cv_id, cv_text in cv_store.cvs.items():
         try:
             logger.info(f"Processing CV: {cv_id}")
-
-            # Validate CV text
             cv_word_count = len(cv_text.split())
             if cv_word_count < 10:
                 error_msg = f"CV {cv_id} is too short for analysis"
@@ -247,26 +249,46 @@ async def score_cvs(background_tasks: BackgroundTasks):
                 })
                 continue
 
-            # --- Semantic similarity score ---
-            score_data = cv_store.rag_engine.calculate_comprehensive_score(cv_text, cv_store.jd)
-            if "error" in score_data:
-                error_msg = f"Scoring failed for CV {cv_id}: {score_data['error']}"
-                processing_errors.append(error_msg)
-                results.append({
-                    "cv_id": cv_id,
-                    "error": score_data["error"],
-                    "filename": cv_store.metadata[cv_id]["filename"]
-                })
-                continue
+            # --- Extract sections ---
+            projects_text = extract_section(cv_text, "Projects")
+            experience_text = extract_section(cv_text, "Experience")
+            techskills_text = extract_section(cv_text, "Technical Skills")
+            cgpa_val = extract_cgpa(cv_text)
 
-            semantic_score = score_data["final_score"] * 100  # Convert to 0-100 scale
+            # --- Section-wise scoring ---
+            def section_score(section_text):
+                if not section_text or len(section_text.strip()) < 10:
+                    return {
+                        "semantic": 0.0,
+                        "keyword": 0.0,
+                        "combined": 0.0
+                    }
+                score_data = cv_store.rag_engine.calculate_comprehensive_score(section_text, cv_store.jd)
+                semantic_score = score_data.get("final_score", 0.0) * 100
+                keyword_score = EnhancedRAGEngine.score_cv_by_semantic_keywords(
+                    section_text, jd_keywords_with_weights, cv_store.rag_engine.model, threshold=0.6
+                )
+                combined = EnhancedRAGEngine.combine_scores(semantic_score, keyword_score, 0.8, 0.2)
+                return {
+                    "semantic": float(round(semantic_score, 2)),
+                    "keyword": float(round(keyword_score, 2)),
+                    "combined": float(round(combined, 2))
+                }
 
-            # --- Weighted keyword match score ---
-            keyword_score = EnhancedRAGEngine.score_cv_by_weighted_keywords(cv_text, jd_keywords_with_weights)
+            # Section scores
+            cv_scores = section_score(cv_text)
+            projects_scores = section_score(projects_text)
+            experience_scores = section_score(experience_text)
+            techskills_scores = section_score(techskills_text)
+            cgpa_score = score_cgpa(cgpa_val)
 
-            # --- Combine scores (70% semantic, 30% keyword) ---
-            final_score = EnhancedRAGEngine.combine_scores(
-                semantic_score, keyword_score, semantic_weight=0.8, keyword_weight=0.2
+            # Weighted aggregation
+            final_score = (
+                WEIGHTS["cv"] * cv_scores["combined"] +
+                WEIGHTS["projects"] * projects_scores["combined"] +
+                WEIGHTS["experience"] * experience_scores["combined"] +
+                WEIGHTS["cgpa"] * cgpa_score +
+                WEIGHTS["techskills"] * techskills_scores["combined"]
             )
 
             # Determine match quality
@@ -282,17 +304,21 @@ async def score_cvs(background_tasks: BackgroundTasks):
             cv_result = {
                 "cv_id": cv_id,
                 "filename": cv_store.metadata[cv_id]["filename"],
-                "final_score": round(final_score, 2),
+                "final_score": float(round(final_score, 2)),
                 "match_quality": match_quality,
-                "semantic_score": round(semantic_score, 2),
-                "keyword_score": round(keyword_score, 2),
-                "max_similarity": round(score_data["max_similarity"] * 100, 2),
-                "avg_similarity": round(score_data["avg_similarity"] * 100, 2),
-                "coverage_score": round(score_data["coverage_score"] * 100, 2)
+                "sections": {
+                    "complete_cv": cv_scores,
+                    "projects": projects_scores,
+                    "experience": experience_scores,
+                    "technical_skills": techskills_scores,
+                    "cgpa": {
+                        "value": cgpa_val,
+                        "score": float(round(cgpa_score, 2))
+                    }
+                }
             }
 
             results.append(cv_result)
-            detailed_results[cv_id] = score_data
 
         except Exception as e:
             error_msg = f"Unexpected error processing CV {cv_id}: {str(e)}"
@@ -304,19 +330,22 @@ async def score_cvs(background_tasks: BackgroundTasks):
                 "filename": cv_store.metadata[cv_id]["filename"]
             })
 
-    # Check if we have any successful results
     successful_results = [r for r in results if "error" not in r]
-    if not successful_results:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Failed to process any CVs successfully. Errors: {'; '.join(processing_errors)}"
-        )
-
-    # Sort successful results by score
     successful_results.sort(key=lambda x: x.get("final_score", 0), reverse=True)
 
+    # Relative scoring section for final_score
+    if successful_results:
+        max_score = successful_results[0]["final_score"]
+        if max_score > 0:
+            for r in successful_results:
+                r["relative_score"] = round((r["final_score"] / max_score) * 100, 2)
+        else:
+            for r in successful_results:
+                r["relative_score"] = 0.0
+
+
     return {
-        "ranked_candidates": results,
+        "ranked_candidates": successful_results,
         "summary": {
             "total_cvs_processed": len(cv_store.cvs),
             "successful_processing": len(successful_results),
@@ -332,7 +361,6 @@ async def score_cvs(background_tasks: BackgroundTasks):
 
 @app.delete("/clear-data/")
 async def clear_data():
-    """Clear all uploaded CVs and JD."""
     cv_store.cvs.clear()
     cv_store.jd = None
     cv_store.metadata.clear()
@@ -340,14 +368,10 @@ async def clear_data():
 
 @app.get("/cv/{cv_id}")
 async def get_cv_details(cv_id: str):
-    """Get details for a specific CV."""
     if cv_id not in cv_store.cvs:
         raise HTTPException(status_code=404, detail="CV not found")
-    
     return {
         "cv_id": cv_id,
         "metadata": cv_store.metadata[cv_id],
         "text_preview": cv_store.cvs[cv_id][:500] + "..." if len(cv_store.cvs[cv_id]) > 500 else cv_store.cvs[cv_id]
     }
-
-
