@@ -6,6 +6,8 @@ import re
 from typing import List, Tuple, Optional
 from dataclasses import dataclass
 import logging
+from keybert import KeyBERT
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -333,6 +335,44 @@ class EnhancedRAGEngine:
         except Exception as e:
             logger.error(f"Error in comprehensive scoring: {e}")
             return {"error": f"Scoring failed: {str(e)}"}
+        
+    def extract_jd_keywords_with_weights(jd_text, top_n=20, ngram_range=(1,2)):
+        """
+        Extracts top_n keywords/keyphrases from the JD using KeyBERT, returns (phrase, weight) tuples.
+        """
+        kw_model = KeyBERT()
+        keywords = kw_model.extract_keywords(
+            jd_text,
+            keyphrase_ngram_range=ngram_range,
+            stop_words='english',
+            top_n=top_n
+        )
+        # Each item: (phrase, score)
+        return keywords  
+    # Score a CV by weighted keyword coverage:
+    def score_cv_by_weighted_keywords(cv_text, jd_keywords_with_weights):
+        """
+        Scores a CV out of 100 based on weighted presence of JD keywords in the CV.
+        """
+        cv_text_lower = cv_text.lower()
+        total_weight = sum(weight for _, weight in jd_keywords_with_weights)
+        if total_weight == 0:
+            return 0.0
+        matched_weight = 0.0
+        for phrase, weight in jd_keywords_with_weights:
+            if re.search(r'\b' + re.escape(phrase.lower()) + r'\b', cv_text_lower):
+                matched_weight += weight
+        score = (matched_weight / total_weight) * 100
+        return round(score, 2)
+    # Utility to combine scores:
+    def combine_scores(semantic_score, keyword_score, semantic_weight=0.7, keyword_weight=0.3):
+        """
+        Combine semantic and keyword scores using given weights.
+        """
+        final = (semantic_score * semantic_weight) + (keyword_score * keyword_weight)
+        return round(final, 2)
+
+
 
 # Backward compatibility functions
 def chunk_text(text: str, chunk_size: int = 100) -> List[str]:
