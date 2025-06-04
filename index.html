@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CV-Align - Resume Analysis System</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>CV-Align</h1>
+            <p>Resume Analysis & Ranking System</p>
+        </header>
+
+        <main>
+            <div class="upload-section">
+                <div class="upload-box" id="jdUploadBox">
+                    <h2>Upload Job Description</h2>
+                    <div class="drop-zone" id="jdDropZone">
+                        <p>Drag & Drop JD file here or</p>
+                        <button class="upload-btn">Choose File</button>
+                        <input type="file" id="jdInput" accept=".pdf,.docx" hidden>
+                    </div>
+                    <div class="file-info" id="jdFileInfo"></div>
+                </div>
+
+                <div class="upload-box" id="cvUploadBox">
+                    <h2>Upload Resumes</h2>
+                    <div class="drop-zone" id="cvDropZone">
+                        <p>Drag & Drop CV files here or</p>
+                        <button class="upload-btn">Choose Files</button>
+                        <input type="file" id="cvInput" accept=".pdf,.docx" multiple hidden>
+                    </div>
+                    <div class="file-info" id="cvFileInfo"></div>
+                </div>
+            </div>
+
+            <div class="action-section">
+                <button id="analyzeBtn" class="analyze-btn" disabled>Analyze Resumes</button>
+            </div>
+
+            <div class="results-section" id="resultsSection">
+                <h2>Analysis Results</h2>
+                <div class="results-container" id="resultsContainer">
+                    <!-- Results will be populated here -->
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div id="loadingOverlay" class="loading-overlay hidden">
+        <div class="loading-content">
+            <div class="spinner"></div>
+            <p id="loadingMessage">Processing...</p>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html> 

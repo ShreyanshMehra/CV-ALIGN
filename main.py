@@ -11,6 +11,85 @@ import re
 
 from rag_engine import EnhancedRAGEngine, ChunkConfig
 
+def extract_section(text: str, section_name: str) -> str:
+    """Extract text from a specific section of the CV."""
+    # Common section header patterns
+    patterns = [
+        rf"{section_name}:?\s*\n",
+        rf"\b{section_name}\b:?\s*\n",
+        rf"\[{section_name}\]:?\s*\n",
+        rf"<{section_name}>:?\s*\n"
+    ]
+    
+    # Try each pattern
+    for pattern in patterns:
+        matches = list(re.finditer(pattern, text, re.IGNORECASE))
+        if matches:
+            start = matches[0].end()
+            # Look for the next section header or end of text
+            next_section = None
+            for next_pattern in [r"\n\s*[A-Z][A-Za-z\s]*:?\s*\n", r"\n\s*\[[A-Z][A-Za-z\s]*\]:?\s*\n"]:
+                next_matches = list(re.finditer(next_pattern, text[start:]))
+                if next_matches:
+                    next_section = next_matches[0].start() + start
+                    break
+            
+            section_text = text[start:next_section] if next_section else text[start:]
+            return section_text.strip()
+    
+    return ""
+
+def score_cgpa(cgpa_text: str) -> float:
+    """Extract and score CGPA from text."""
+    if not cgpa_text:
+        return 0.0
+    
+    # Simple patterns to match CGPA numbers
+    cgpa_patterns = [
+        # Direct CGPA mentions
+        r"CGPA\s*[:/]?\s*(\d+\.\d+)",  # Matches "CGPA: 9.4" or "CGPA 9.4"
+        r"GPA\s*[:/]?\s*(\d+\.\d+)",    # Matches "GPA: 7.3" or "GPA 7.3"
+        # Table format with CGPA in header
+        r"CGPA/Percentage.*?(\d+\.\d+)",  # Matches table header with CGPA and value
+        r"(?:B\.Tech|Bachelor|Degree).*?(\d+\.\d+)",  # Matches degree row with CGPA
+    ]
+    
+    for pattern in cgpa_patterns:
+        matches = re.finditer(pattern, cgpa_text, re.IGNORECASE | re.DOTALL)
+        for match in matches:
+            try:
+                cgpa = float(match.group(1))
+                # Normalize to 100-point scale
+                if cgpa <= 10.0:
+                    return (cgpa / 10.0) * 100
+            except ValueError:
+                continue
+    
+    return 0.0
+
+def extract_cgpa(text: str) -> float:
+    """Extract CGPA value from CV text."""
+    # Common CGPA/GPA section headers
+    cgpa_sections = [
+        "Education",
+        "Academic",
+        "CGPA",
+        "GPA",
+        "B.Tech",
+        "Bachelor"
+    ]
+    
+    # First try to find CGPA in specific sections
+    for section in cgpa_sections:
+        section_text = extract_section(text, section)
+        if section_text:
+            cgpa = score_cgpa(section_text)
+            if cgpa > 0:
+                return cgpa
+    
+    # If not found in sections, try the entire text
+    return score_cgpa(text)
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -18,7 +97,7 @@ app = FastAPI(title="Enhanced CV Scoring System", version="2.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://127.0.0.1:8001", "http://localhost:8001"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -97,23 +176,35 @@ def extract_text_from_docx(file_path: str) -> str:
 def save_and_extract(file: UploadFile) -> tuple[str, str]:
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
+    
+    logger.info(f"Processing file: {file.filename}")
     ext = file.filename.split(".")[-1].lower()
     if ext not in ["pdf", "docx"]:
         raise HTTPException(status_code=400, detail="Only PDF and DOCX files are supported")
+    
     filename = f"{uuid.uuid4()}.{ext}"
     path = os.path.join(UPLOAD_DIR, filename)
+    logger.info(f"Saving file to: {path}")
+    
     try:
         with open(path, "wb") as f:
             content = file.file.read()
             if len(content) == 0:
                 raise HTTPException(status_code=400, detail="Empty file uploaded")
             f.write(content)
+            logger.info(f"File saved successfully: {len(content)} bytes")
+        
         if ext == "pdf":
+            logger.info("Extracting text from PDF")
             extracted_text = extract_text_from_pdf(path)
         else:
+            logger.info("Extracting text from DOCX")
             extracted_text = extract_text_from_docx(path)
-        if not extracted_text.strip():
-            raise HTTPException(status_code=400, detail="No text could be extracted from the file")
+        
+        if not extracted_text or not extracted_text.strip():
+            raise HTTPException(status_code=400, detail="No text could be extracted from the file. Please ensure the file contains readable text.")
+        
+        logger.info(f"Successfully extracted {len(extracted_text)} characters of text")
         return extracted_text, filename
     except HTTPException:
         raise
@@ -124,60 +215,10 @@ def save_and_extract(file: UploadFile) -> tuple[str, str]:
         if os.path.exists(path):
             try:
                 os.remove(path)
-            except:
+                logger.info(f"Temporary file removed: {path}")
+            except Exception as e:
+                logger.error(f"Failed to remove temporary file {path}: {e}")
                 pass
-
-def extract_section(text: str, section_name: str) -> str:
-    pattern = rf"{section_name}[\s:\-]*\n?(.*?)(?=\n[A-Z][a-zA-Z ]{{2,20}}[\s:\-]*\n|$)"
-    match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
-    return match.group(1).strip() if match else ""
-
-import re
-
-import re
-
-def extract_cgpa(text):
-    """
-    Extracts the most likely CGPA (on a 10-point scale) from the text.
-    Looks for patterns like 'CGPA: 9.1/10', 'CGPA 9.1', 'GPA 8.5 out of 10', etc.
-    Returns the highest value found between 0 and 10.
-    """
-    cgpa_candidates = []
-
-    # Patterns like 'CGPA: 9.1/10', 'CGPA 9.1', 'CGPA-9.1', 'GPA 8.5 out of 10'
-    regex = r"(?:CGPA|GPA)[^\d]{0,5}(\d{1,2}\.\d{1,2})"
-    for match in re.finditer(regex, text, re.IGNORECASE):
-        val = float(match.group(1))
-        if 0 < val <= 10:
-            cgpa_candidates.append(val)
-
-    # Also look for lines like 'CGPA: 9.1/10'
-    regex2 = r"(?:CGPA|GPA)[^\d]{0,5}(\d{1,2}\.\d{1,2})\s*(?:/|out of)?\s*10"
-    for match in re.finditer(regex2, text, re.IGNORECASE):
-        val = float(match.group(1))
-        if 0 < val <= 10:
-            cgpa_candidates.append(val)
-
-    # If nothing found, look for a number with '/10' nearby
-    regex3 = r"(\d{1,2}\.\d{1,2})\s*/\s*10"
-    for match in re.finditer(regex3, text):
-        val = float(match.group(1))
-        if 0 < val <= 10:
-            cgpa_candidates.append(val)
-
-    if cgpa_candidates:
-        return max(cgpa_candidates)
-    return None
-
-
-def score_cgpa(cgpa, max_cgpa=10.0):
-    if cgpa and 0 < cgpa <= max_cgpa:
-        return round((cgpa / max_cgpa) * 100, 2)
-    else:
-        return 0.0
-
-
-
 
 @app.get("/")
 def read_root():
@@ -187,11 +228,31 @@ def read_root():
 def get_status():
     return cv_store.get_status()
 
-@app.post("/upload-cv/")
+@app.post("/upload-cv")
 async def upload_cv(cv_id: str, file: UploadFile = File(...)):
     try:
+        logger.info(f"Received CV upload request - ID: {cv_id}, Filename: {file.filename}")
+        
+        if not file:
+            raise HTTPException(status_code=400, detail="No file provided")
+        
+        if not cv_id:
+            raise HTTPException(status_code=400, detail="No CV ID provided")
+        
+        # Check if file has content
+        first_byte = await file.read(1)
+        if not first_byte:
+            raise HTTPException(status_code=400, detail="File is empty")
+        
+        # Reset file pointer
+        await file.seek(0)
+        
         text, filename = save_and_extract(file)
+        logger.info(f"Successfully extracted text from CV - ID: {cv_id}, Length: {len(text)}")
+        
         cv_store.add_cv(cv_id, text, filename)
+        logger.info(f"CV stored successfully - ID: {cv_id}")
+        
         return {
             "message": f"CV {cv_id} uploaded successfully",
             "cv_id": cv_id,
@@ -200,11 +261,14 @@ async def upload_cv(cv_id: str, file: UploadFile = File(...)):
             "word_count": len(text.split()),
             "character_count": len(text)
         }
+    except HTTPException as he:
+        logger.error(f"HTTP error uploading CV {cv_id}: {str(he)}")
+        raise
     except Exception as e:
-        logger.error(f"Error uploading CV {cv_id}: {e}")
+        logger.error(f"Error uploading CV {cv_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/upload-jd/")
+@app.post("/upload-jd")
 async def upload_jd(file: UploadFile = File(...)):
     try:
         text, filename = save_and_extract(file)
@@ -295,14 +359,13 @@ async def score_cvs(background_tasks: BackgroundTasks):
             projects_scores = section_score(projects_text)
             experience_scores = section_score(experience_text)
             techskills_scores = section_score(techskills_text)
-            cgpa_score = score_cgpa(cgpa_val)
 
             # Weighted aggregation
             final_score = (
                 WEIGHTS["cv"] * cv_scores["combined"] +
                 WEIGHTS["projects"] * projects_scores["combined"] +
                 WEIGHTS["experience"] * experience_scores["combined"] +
-                WEIGHTS["cgpa"] * cgpa_score +
+                WEIGHTS["cgpa"] * cgpa_val +
                 WEIGHTS["techskills"] * techskills_scores["combined"]
             )
 
@@ -328,7 +391,7 @@ async def score_cvs(background_tasks: BackgroundTasks):
                     "technical_skills": techskills_scores,
                     "cgpa": {
                         "value": cgpa_val,
-                        "score": float(round(cgpa_score, 2))
+                        "score": float(round(cgpa_val, 2))
                     }
                 }
             }
@@ -374,7 +437,6 @@ async def score_cvs(background_tasks: BackgroundTasks):
         }
     }
 
-    from fastapi import APIRouter
 
 @app.post("/final-output/")
 async def final_output():
@@ -433,13 +495,12 @@ async def final_output():
             projects_scores = section_score(projects_text)
             experience_scores = section_score(experience_text)
             techskills_scores = section_score(techskills_text)
-            cgpa_score = score_cgpa(cgpa_val)
 
             final_score = (
                 WEIGHTS["cv"] * cv_scores["combined"] +
                 WEIGHTS["projects"] * projects_scores["combined"] +
                 WEIGHTS["experience"] * experience_scores["combined"] +
-                WEIGHTS["cgpa"] * cgpa_score +
+                WEIGHTS["cgpa"] * cgpa_val +
                 WEIGHTS["techskills"] * techskills_scores["combined"]
             )
 
@@ -450,7 +511,7 @@ async def final_output():
                 "sections": {
                     "cgpa": {
                         "value": cgpa_val,
-                        "score": float(round(cgpa_score, 2))
+                        "score": float(round(cgpa_val, 2))
                     },
                     "experience": experience_scores,
                     "projects": projects_scores,
