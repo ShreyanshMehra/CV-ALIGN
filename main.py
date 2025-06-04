@@ -134,26 +134,41 @@ def extract_section(text: str, section_name: str) -> str:
 
 import re
 
+import re
+
 def extract_cgpa(text):
     """
-    Extracts CGPA for B.Tech. from the education table/section.
-    Only returns a value between 0 and 10.
+    Extracts the most likely CGPA (on a 10-point scale) from the text.
+    Looks for patterns like 'CGPA: 9.1/10', 'CGPA 9.1', 'GPA 8.5 out of 10', etc.
+    Returns the highest value found between 0 and 10.
     """
-    # Try to find a B.Tech. row with a CGPA value (not percentage)
-    pattern = r"B\.?Tech.*?CGPA\/?Percentage[^\d]{0,10}(\d{1,2}\.\d{1,2})"
-    match = re.search(pattern, text, re.IGNORECASE)
-    if match:
+    cgpa_candidates = []
+
+    # Patterns like 'CGPA: 9.1/10', 'CGPA 9.1', 'CGPA-9.1', 'GPA 8.5 out of 10'
+    regex = r"(?:CGPA|GPA)[^\d]{0,5}(\d{1,2}\.\d{1,2})"
+    for match in re.finditer(regex, text, re.IGNORECASE):
         val = float(match.group(1))
         if 0 < val <= 10:
-            return val
-    # Fallback: Look for B.Tech row with any number (avoid percentages >10)
-    row_pattern = r"B\.?Tech.*?(\d{1,2}\.\d{1,2})"
-    row_match = re.search(row_pattern, text, re.IGNORECASE)
-    if row_match:
-        val = float(row_match.group(1))
+            cgpa_candidates.append(val)
+
+    # Also look for lines like 'CGPA: 9.1/10'
+    regex2 = r"(?:CGPA|GPA)[^\d]{0,5}(\d{1,2}\.\d{1,2})\s*(?:/|out of)?\s*10"
+    for match in re.finditer(regex2, text, re.IGNORECASE):
+        val = float(match.group(1))
         if 0 < val <= 10:
-            return val
+            cgpa_candidates.append(val)
+
+    # If nothing found, look for a number with '/10' nearby
+    regex3 = r"(\d{1,2}\.\d{1,2})\s*/\s*10"
+    for match in re.finditer(regex3, text):
+        val = float(match.group(1))
+        if 0 < val <= 10:
+            cgpa_candidates.append(val)
+
+    if cgpa_candidates:
+        return max(cgpa_candidates)
     return None
+
 
 def score_cgpa(cgpa, max_cgpa=10.0):
     if cgpa and 0 < cgpa <= max_cgpa:
@@ -474,34 +489,34 @@ async def final_output():
     for r in results:
         r["relative_score"] = round((r["final_score"] / max_final_score) * 100, 2) if max_final_score > 0 else 0
 
-    # --- Generate Pros and Cons ---
-    def generate_pros_cons_relative(cv_result):
-        pros, cons = [], []
+    # --- Generate Pros and review ---
+    def generate_pros_review_relative(cv_result):
+        review = []
         rel = cv_result.get("relative_sections", {})
         if rel.get("cgpa", 0) >= 75:
-            pros.append("Good CGPA score.")
+            review.append("Good CGPA score.")
         elif rel.get("cgpa", 0) < 40:
-            cons.append("Low  CGPA score.")
+            review.append("Low  CGPA score.")
         if rel.get("experience", 0) >= 75:
-            pros.append("Good industry experiences.")
+            review.append("Good industry experiences.")
         elif rel.get("experience", 0) < 40:
-            cons.append("Candidate doesn't have ample industry experience.")
+            review.append("Candidate doesn't have ample industry experience.")
         if rel.get("projects", 0) >= 75:
-            pros.append("Good projects in CV shows proficiency in solving real-world problems")
+            review.append("Good projects in CV shows proficiency in solving real-world problems")
         elif rel.get("projects", 0) < 40:
-            cons.append("Projects section is not impressive.")
+            review.append("Projects section is not impressive.")
         if rel.get("technical_skills", 0) >= 75:
-            pros.append("Strong relative technical skills.")
+            review.append("Strong relative technical skills.")
         elif rel.get("technical_skills", 0) < 40:
-            cons.append("Weak relative technical skills.")
+            review.append("Weak relative technical skills.")
         if cv_result.get("relative_score", 0) >= 75:
-            pros.append("Overall the CV of this candidate looks good compared to other candidates.")
+            review.append("Overall the CV of this candidate looks good.")
         elif cv_result.get("relative_score", 0) < 40:
-            cons.append("The CV isn't the best out of all the other candidates.")
-        return {"pros": pros, "cons": cons}
+            review.append("The CV isn't the best out of all the other candidates.")
+        return {"review": review, "review": review}
 
     for r in results:
-        r["pros_cons"] = generate_pros_cons_relative(r)
+        r["pros_review"] = generate_pros_review_relative(r)
 
     # --- Sort by relative_score descending ---
     results.sort(key=lambda x: x.get("relative_score", 0), reverse=True)
