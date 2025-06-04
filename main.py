@@ -359,6 +359,166 @@ async def score_cvs(background_tasks: BackgroundTasks):
         }
     }
 
+    from fastapi import APIRouter
+
+@app.post("/final-output/")
+async def final_output():
+    if not cv_store.jd:
+        raise HTTPException(status_code=400, detail="Please upload a Job Description first")
+    if not cv_store.cvs:
+        raise HTTPException(status_code=400, detail="Please upload at least one CV")
+    jd_word_count = len(cv_store.jd.split())
+    if jd_word_count < 10:
+        raise HTTPException(
+            status_code=400,
+            detail="Job Description is too short for meaningful analysis. Please upload a more detailed JD."
+        )
+    try:
+        jd_keywords_with_weights = EnhancedRAGEngine.extract_jd_keywords_with_weights(cv_store.jd, top_n=20)
+    except Exception as e:
+        logger.error(f"Error extracting JD keywords: {e}")
+        raise HTTPException(status_code=500, detail="Failed to extract keywords from JD.")
+
+    WEIGHTS = {
+        "cv": 0.4,
+        "projects": 0.2,
+        "experience": 0.2,
+        "cgpa": 0.1,
+        "techskills": 0.1
+    }
+
+    results = []
+    for cv_id, cv_text in cv_store.cvs.items():
+        try:
+            projects_text = extract_section(cv_text, "Projects")
+            experience_text = extract_section(cv_text, "Experience")
+            techskills_text = extract_section(cv_text, "Technical Skills")
+            cgpa_val = extract_cgpa(cv_text)
+
+            def section_score(section_text):
+                if not section_text or len(section_text.strip()) < 10:
+                    return {
+                        "semantic": 0.0,
+                        "keyword": 0.0,
+                        "combined": 0.0
+                    }
+                score_data = cv_store.rag_engine.calculate_comprehensive_score(section_text, cv_store.jd)
+                semantic_score = score_data.get("final_score", 0.0) * 100
+                keyword_score = EnhancedRAGEngine.score_cv_by_semantic_keywords(
+                    section_text, jd_keywords_with_weights, cv_store.rag_engine.model, threshold=0.6
+                )
+                combined = EnhancedRAGEngine.combine_scores(semantic_score, keyword_score, 0.8, 0.2)
+                return {
+                    "semantic": float(round(semantic_score, 2)),
+                    "keyword": float(round(keyword_score, 2)),
+                    "combined": float(round(combined, 2))
+                }
+
+            cv_scores = section_score(cv_text)
+            projects_scores = section_score(projects_text)
+            experience_scores = section_score(experience_text)
+            techskills_scores = section_score(techskills_text)
+            cgpa_score = score_cgpa(cgpa_val)
+
+            final_score = (
+                WEIGHTS["cv"] * cv_scores["combined"] +
+                WEIGHTS["projects"] * projects_scores["combined"] +
+                WEIGHTS["experience"] * experience_scores["combined"] +
+                WEIGHTS["cgpa"] * cgpa_score +
+                WEIGHTS["techskills"] * techskills_scores["combined"]
+            )
+
+            cv_result = {
+                "cv_id": cv_id,
+                "filename": cv_store.metadata[cv_id]["filename"],
+                "final_score": float(round(final_score, 2)),
+                "sections": {
+                    "cgpa": {
+                        "value": cgpa_val,
+                        "score": float(round(cgpa_score, 2))
+                    },
+                    "experience": experience_scores,
+                    "projects": projects_scores,
+                    "technical_skills": techskills_scores
+                }
+            }
+            results.append(cv_result)
+        except Exception as e:
+            logger.error(f"Error processing CV {cv_id}: {e}")
+            continue
+
+    # --- Calculate relative section scores ---
+    import numpy as np
+    section_keys = ["cgpa", "experience", "projects", "technical_skills"]
+    section_max = {}
+    for key in section_keys:
+        if key == "cgpa":
+            scores = [r["sections"][key]["score"] for r in results]
+        else:
+            scores = [r["sections"][key]["combined"] for r in results]
+        section_max[key] = max(scores) if scores else 1
+
+    for r in results:
+        r["relative_sections"] = {}
+        for key in section_keys:
+            if key == "cgpa":
+                score = r["sections"][key]["score"]
+            else:
+                score = r["sections"][key]["combined"]
+            max_score = section_max[key]
+            rel_score = (score / max_score) * 100 if max_score > 0 else 0
+            r["relative_sections"][key] = round(rel_score, 2)
+
+    # --- Calculate overall relative score ---
+    max_final_score = max([r["final_score"] for r in results], default=1)
+    for r in results:
+        r["relative_score"] = round((r["final_score"] / max_final_score) * 100, 2) if max_final_score > 0 else 0
+
+    # --- Generate Pros and Cons ---
+    def generate_pros_cons_relative(cv_result):
+        pros, cons = [], []
+        rel = cv_result.get("relative_sections", {})
+        if rel.get("cgpa", 0) >= 75:
+            pros.append("Good CGPA score.")
+        elif rel.get("cgpa", 0) < 40:
+            cons.append("Low  CGPA score.")
+        if rel.get("experience", 0) >= 75:
+            pros.append("Good industry experiences.")
+        elif rel.get("experience", 0) < 40:
+            cons.append("Candidate doesn't have ample industry experience.")
+        if rel.get("projects", 0) >= 75:
+            pros.append("Good projects in CV shows proficiency in solving real-world problems")
+        elif rel.get("projects", 0) < 40:
+            cons.append("Projects section is not impressive.")
+        if rel.get("technical_skills", 0) >= 75:
+            pros.append("Strong relative technical skills.")
+        elif rel.get("technical_skills", 0) < 40:
+            cons.append("Weak relative technical skills.")
+        if cv_result.get("relative_score", 0) >= 75:
+            pros.append("Overall the CV of this candidate looks good compared to other candidates.")
+        elif cv_result.get("relative_score", 0) < 40:
+            cons.append("The CV isn't the best out of all the other candidates.")
+        return {"pros": pros, "cons": cons}
+
+    for r in results:
+        r["pros_cons"] = generate_pros_cons_relative(r)
+
+    # --- Sort by relative_score descending ---
+    results.sort(key=lambda x: x.get("relative_score", 0), reverse=True)
+
+    return {
+        "ranked_candidates": results,
+        "summary": {
+            "total_cvs_processed": len(results),
+            "highest_relative_score": max([r.get("relative_score", 0) for r in results], default=0),
+            "average_relative_score": round(
+                sum([r.get("relative_score", 0) for r in results]) / len(results)
+                if results else 0, 2
+            ),
+        }
+    }
+
+
 @app.delete("/clear-data/")
 async def clear_data():
     cv_store.cvs.clear()
