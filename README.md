@@ -6,48 +6,49 @@ CV-ALIGN is an advanced tool that uses state-of-the-art Natural Language Process
 
 - **Semantic Analysis**: Uses advanced NLP models to understand context beyond simple keyword matching
 - **Comprehensive Scoring**: Provides detailed scoring metrics including:
-  - Overall alignment score
-  - Maximum similarity score
-  - Average similarity score
-  - Coverage score
-- **Keyword Analysis**: Extracts and weights important keywords from job descriptions
-- **Real-time Processing**: Fast and efficient processing of documents
-- **User-friendly Interface**: Modern, responsive web interface for easy document upload and analysis
+  - Overall alignment score (weighted combination of all components)
+  - Section-wise scores (Projects, Experience, Technical Skills)
+  - CGPA evaluation
+  - Keyword matching scores
+- **Intelligent Processing**:
+  - Smart text chunking and preprocessing
+  - Section-specific analysis
+  - PDF and DOCX file support
+- **User-friendly Interface**: Modern, responsive web interface with drag & drop functionality
 
 ## 🛠️ Tech Stack
 
 ### Backend
 - **Python 3.x**
 - **FastAPI**: High-performance web framework for building APIs
-- **Sentence-Transformers**: For semantic text embeddings using "all-MiniLM-L6-v2" model
+- **Sentence-Transformers**: Using "all-MiniLM-L6-v2" model for semantic embeddings
 - **FAISS**: Facebook AI Similarity Search for efficient similarity computations
 - **KeyBERT**: For keyword extraction and analysis
+- **pdfplumber & python-docx**: For document parsing
 - **NumPy**: For numerical computations
 
 ### Frontend
-- **HTML5**: Structure and content
-- **CSS3**: Modern styling and responsive design
-- **JavaScript**: Client-side logic and API integration
+- **HTML5**: Modern semantic markup
+- **CSS3**: Responsive design with animations
+- **JavaScript**: Dynamic UI and API integration
 - **Drag & Drop API**: Native file upload functionality
 
 ## 🧠 Technical Approach
 
 ### RAG (Retrieval-Augmented Generation) Engine
-The core of CV-ALIGN is built on a custom RAG engine that:
+The core of CV-ALIGN uses a sophisticated RAG engine that:
 1. **Text Preprocessing**: Cleanses and normalizes input text
-2. **Chunking**: Intelligently splits text into meaningful segments
-3. **Embedding Generation**: Creates dense vector representations using Sentence-Transformers
+2. **Smart Chunking**: Splits text into meaningful segments with configurable overlap
+3. **Semantic Analysis**: Generates dense vector embeddings using Sentence Transformers
 4. **Similarity Computation**: Uses FAISS for efficient similarity search
-5. **Score Calculation**: Implements a weighted scoring system combining:
-   - Semantic similarity
-   - Keyword matching
-   - Coverage analysis
+5. **Comprehensive Scoring**: Implements a weighted scoring system:
+   - CV Overall (40%)
+   - Projects (20%)
+   - Experience (20%)
+   - CGPA (10%)
+   - Technical Skills (10%)
 
-### Scoring Algorithm
-The final score is calculated using a weighted combination of:
-- 40% Maximum similarity
-- 40% Average similarity
-- 20% Coverage score
+
 
 ## 📁 Project Structure
 
@@ -73,33 +74,38 @@ CV-ALIGN/
    ```
 3. Start the server:
    ```bash
-   python server.py
+   python Backend/server.py
    ```
 4. Open your browser and navigate to:
    ```
    http://127.0.0.1:8001
    ```
 
-## 📋 Files to Upload to GitHub
+## 💡 Key Features in Detail
 
-Here are the essential files that should be uploaded to GitHub:
+### Document Processing
+- Supports PDF and DOCX formats
+- Intelligent section extraction (Education, Experience, Projects, etc.)
+- Maintains document structure and formatting
+- Handles multi-page documents
 
-1. Backend Files:
-   - `rag_engine.py`
-   - `main.py`
-   - `server.py`
-   - `requirements.txt`
+### Scoring System
+- **Semantic Scoring**: Uses advanced NLP for context understanding
+- **Keyword Analysis**: Extracts and weights important terms from job descriptions
+- **Section Analysis**: Individual scoring for different CV sections
+- **CGPA Evaluation**: Intelligent CGPA extraction and normalization
+- **Relative Ranking**: Compares candidates within a batch
 
-2. Frontend Files:
-   - `index.html`
-   - `styles.css`
-   - `script.js`
+### User Interface
+- Drag & drop file uploads
+- Real-time processing feedback
+- Clear result visualization
+- Error handling and status updates
 
-3. Configuration and Documentation:
-   - `.gitignore`
-   - `README.md`
+## 🔒 Best Practices
 
-Make sure to exclude:
-- `__pycache__` directories
-- Environment files
-- IDE configuration files
+- Implements singleton pattern for resource management
+- Uses caching for performance optimization
+- Follows modular architecture
+- Includes comprehensive error handling
+- Provides detailed logging
