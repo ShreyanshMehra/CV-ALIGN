@@ -12,7 +12,7 @@ const loadingOverlay = document.getElementById('loadingOverlay');
 // State
 let jdFile = null;
 let cvFiles = [];
-const API_URL = 'http://127.0.0.1:8001/api';
+const API_URL = 'https://cv-align.onrender.com/api';
 
 // Utility Functions
 function showLoading() {
