@@ -6,9 +6,9 @@ import re
 from typing import List, Tuple, Dict
 from dataclasses import dataclass
 import logging
-from keybert import KeyBERT
 from functools import lru_cache
-
+from sklearn.feature_extraction.text import CountVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 logger = logging.getLogger(__name__)
 
 API_URL = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
@@ -84,7 +84,6 @@ class EnhancedRAGEngine:
             embeddings = [e[0] for e in embeddings]
         
         return np.array(embeddings, dtype='float32')
-
 
     def preprocess_text(self, text: str) -> str:
         if not text or not isinstance(text, str):
@@ -207,14 +206,29 @@ class EnhancedRAGEngine:
             return {"error": f"Scoring failed: {str(e)}"}
 
     @staticmethod
-    def extract_jd_keywords_with_weights(jd_text, top_n=20, ngram_range=(1,2)):
-        kw_model = KeyBERT()
-        keywords = kw_model.extract_keywords(
-            jd_text,
-            keyphrase_ngram_range=ngram_range,
-            stop_words='english',
-            top_n=top_n
-        )
+    def extract_jd_keywords_with_weights(jd_text: str, top_n=20, ngram_range=(1, 2)) -> list[tuple[str, float]]:
+        """
+        Extract top_n keyword phrases from a job description using Hugging Face cloud embeddings.
+        Returns a list of (keyword, score), where score is cosine similarity to the JD.
+        """
+        vectorizer = CountVectorizer(ngram_range=ngram_range, stop_words='english').fit([jd_text])
+        candidates = vectorizer.get_feature_names_out()
+
+        if not candidates.any():
+            return []
+
+        inputs = [jd_text] + list(candidates)
+        response = requests.post(API_URL, headers=HEADERS, json={"inputs": inputs})
+        response.raise_for_status()
+        embeddings = response.json()
+
+        doc_embedding = np.array(embeddings[0])
+        candidate_embeddings = np.array(embeddings[1:])
+
+        scores = cosine_similarity([doc_embedding], candidate_embeddings)[0]
+        top_indices = np.argsort(scores)[::-1][:top_n]
+
+        keywords = [(candidates[i], float(scores[i])) for i in top_indices]
         return keywords
 
     @staticmethod
