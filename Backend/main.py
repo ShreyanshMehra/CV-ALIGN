@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 import re
 
-from rag_engine import EnhancedRAGEngine, ChunkConfig
+from Backend.rag_engine import EnhancedRAGEngine, ChunkConfig
 
 def extract_section(text: str, section_name: str) -> str:
     """Extract text from a specific section of the CV."""
