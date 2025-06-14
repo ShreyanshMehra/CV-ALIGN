@@ -13,81 +13,57 @@ from Backend.rag_engine import EnhancedRAGEngine, ChunkConfig
 
 def extract_section(text: str, section_name: str) -> str:
     """Extract text from a specific section of the CV."""
-    # Common section header patterns
     patterns = [
         rf"{section_name}:?\s*\n",
         rf"\b{section_name}\b:?\s*\n",
         rf"\[{section_name}\]:?\s*\n",
         rf"<{section_name}>:?\s*\n"
     ]
-    
-    # Try each pattern
     for pattern in patterns:
         matches = list(re.finditer(pattern, text, re.IGNORECASE))
         if matches:
             start = matches[0].end()
-            # Look for the next section header or end of text
             next_section = None
             for next_pattern in [r"\n\s*[A-Z][A-Za-z\s]*:?\s*\n", r"\n\s*\[[A-Z][A-Za-z\s]*\]:?\s*\n"]:
                 next_matches = list(re.finditer(next_pattern, text[start:]))
                 if next_matches:
                     next_section = next_matches[0].start() + start
                     break
-            
             section_text = text[start:next_section] if next_section else text[start:]
             return section_text.strip()
-    
     return ""
 
 def score_cgpa(cgpa_text: str) -> float:
     """Extract and score CGPA from text."""
     if not cgpa_text:
         return 0.0
-    
-    # Simple patterns to match CGPA numbers
     cgpa_patterns = [
-        # Direct CGPA mentions
-        r"CGPA\s*[:/]?\s*(\d+\.\d+)",  # Matches "CGPA: 9.4" or "CGPA 9.4"
-        r"GPA\s*[:/]?\s*(\d+\.\d+)",    # Matches "GPA: 7.3" or "GPA 7.3"
-        # Table format with CGPA in header
-        r"CGPA/Percentage.*?(\d+\.\d+)",  # Matches table header with CGPA and value
-        r"(?:B\.Tech|Bachelor|Degree).*?(\d+\.\d+)",  # Matches degree row with CGPA
+        r"CGPA\s*[:/]?\s*(\d+\.\d+)",
+        r"GPA\s*[:/]?\s*(\d+\.\d+)",
+        r"CGPA/Percentage.*?(\d+\.\d+)",
+        r"(?:B\.Tech|Bachelor|Degree).*?(\d+\.\d+)",
     ]
-    
     for pattern in cgpa_patterns:
         matches = re.finditer(pattern, cgpa_text, re.IGNORECASE | re.DOTALL)
         for match in matches:
             try:
                 cgpa = float(match.group(1))
-                # Normalize to 100-point scale
                 if cgpa <= 10.0:
                     return (cgpa / 10.0) * 100
             except ValueError:
                 continue
-    
     return 0.0
 
 def extract_cgpa(text: str) -> float:
-    """Extract CGPA value from CV text."""
-    # Common CGPA/GPA section headers
     cgpa_sections = [
-        "Education",
-        "Academic",
-        "CGPA",
-        "GPA",
-        "B.Tech",
-        "Bachelor"
+        "Education", "Academic", "CGPA", "GPA", "B.Tech", "Bachelor"
     ]
-    
-    # First try to find CGPA in specific sections
     for section in cgpa_sections:
         section_text = extract_section(text, section)
         if section_text:
             cgpa = score_cgpa(section_text)
             if cgpa > 0:
                 return cgpa
-    
-    # If not found in sections, try the entire text
     return score_cgpa(text)
 
 logging.basicConfig(level=logging.INFO)
@@ -114,7 +90,6 @@ class CVStore:
         self.rag_engine = EnhancedRAGEngine(
             chunk_config=ChunkConfig(chunk_size=256, overlap=50, strategy="recursive")
         )
-    
     def add_cv(self, cv_id: str, text: str, filename: str):
         self.cvs[cv_id] = text
         self.metadata[cv_id] = {
@@ -123,7 +98,6 @@ class CVStore:
             "text_length": len(text),
             "word_count": len(text.split())
         }
-    
     def set_jd(self, text: str, filename: str):
         self.jd = text
         self.metadata["jd"] = {
@@ -132,7 +106,6 @@ class CVStore:
             "text_length": len(text),
             "word_count": len(text.split())
         }
-    
     def get_status(self):
         return {
             "cvs_uploaded": len(self.cvs),
@@ -176,16 +149,13 @@ def extract_text_from_docx(file_path: str) -> str:
 def save_and_extract(file: UploadFile) -> tuple[str, str]:
     if not file.filename:
         raise HTTPException(status_code=400, detail="No filename provided")
-    
     logger.info(f"Processing file: {file.filename}")
     ext = file.filename.split(".")[-1].lower()
     if ext not in ["pdf", "docx"]:
         raise HTTPException(status_code=400, detail="Only PDF and DOCX files are supported")
-    
     filename = f"{uuid.uuid4()}.{ext}"
     path = os.path.join(UPLOAD_DIR, filename)
     logger.info(f"Saving file to: {path}")
-    
     try:
         with open(path, "wb") as f:
             content = file.file.read()
@@ -193,17 +163,14 @@ def save_and_extract(file: UploadFile) -> tuple[str, str]:
                 raise HTTPException(status_code=400, detail="Empty file uploaded")
             f.write(content)
             logger.info(f"File saved successfully: {len(content)} bytes")
-        
         if ext == "pdf":
             logger.info("Extracting text from PDF")
             extracted_text = extract_text_from_pdf(path)
         else:
             logger.info("Extracting text from DOCX")
             extracted_text = extract_text_from_docx(path)
-        
         if not extracted_text or not extracted_text.strip():
             raise HTTPException(status_code=400, detail="No text could be extracted from the file. Please ensure the file contains readable text.")
-        
         logger.info(f"Successfully extracted {len(extracted_text)} characters of text")
         return extracted_text, filename
     except HTTPException:
@@ -232,27 +199,18 @@ def get_status():
 async def upload_cv(cv_id: str, file: UploadFile = File(...)):
     try:
         logger.info(f"Received CV upload request - ID: {cv_id}, Filename: {file.filename}")
-        
         if not file:
             raise HTTPException(status_code=400, detail="No file provided")
-        
         if not cv_id:
             raise HTTPException(status_code=400, detail="No CV ID provided")
-        
-        # Check if file has content
         first_byte = await file.read(1)
         if not first_byte:
             raise HTTPException(status_code=400, detail="File is empty")
-        
-        # Reset file pointer
         await file.seek(0)
-        
         text, filename = save_and_extract(file)
         logger.info(f"Successfully extracted text from CV - ID: {cv_id}, Length: {len(text)}")
-        
         cv_store.add_cv(cv_id, text, filename)
         logger.info(f"CV stored successfully - ID: {cv_id}")
-        
         return {
             "message": f"CV {cv_id} uploaded successfully",
             "cv_id": cv_id,
@@ -302,7 +260,6 @@ async def score_cvs(background_tasks: BackgroundTasks):
         logger.error(f"Error extracting JD keywords: {e}")
         raise HTTPException(status_code=500, detail="Failed to extract keywords from JD.")
 
-    # Section weights (must sum to 1.0)
     WEIGHTS = {
         "cv": 0.4,
         "projects": 0.2,
@@ -328,13 +285,11 @@ async def score_cvs(background_tasks: BackgroundTasks):
                 })
                 continue
 
-            # --- Extract sections ---
             projects_text = extract_section(cv_text, "Projects")
             experience_text = extract_section(cv_text, "Experience")
             techskills_text = extract_section(cv_text, "Technical Skills")
             cgpa_val = extract_cgpa(cv_text)
 
-            # --- Section-wise scoring ---
             def section_score(section_text):
                 if not section_text or len(section_text.strip()) < 10:
                     return {
@@ -345,7 +300,7 @@ async def score_cvs(background_tasks: BackgroundTasks):
                 score_data = cv_store.rag_engine.calculate_comprehensive_score(section_text, cv_store.jd)
                 semantic_score = score_data.get("final_score", 0.0) * 100
                 keyword_score = EnhancedRAGEngine.score_cv_by_semantic_keywords(
-                    section_text, jd_keywords_with_weights, cv_store.rag_engine.model, threshold=0.6
+                    section_text, jd_keywords_with_weights, cv_store.rag_engine.get_embedding, threshold=0.6
                 )
                 combined = EnhancedRAGEngine.combine_scores(semantic_score, keyword_score, 0.8, 0.2)
                 return {
@@ -354,13 +309,11 @@ async def score_cvs(background_tasks: BackgroundTasks):
                     "combined": float(round(combined, 2))
                 }
 
-            # Section scores
             cv_scores = section_score(cv_text)
             projects_scores = section_score(projects_text)
             experience_scores = section_score(experience_text)
             techskills_scores = section_score(techskills_text)
 
-            # Weighted aggregation
             final_score = (
                 WEIGHTS["cv"] * cv_scores["combined"] +
                 WEIGHTS["projects"] * projects_scores["combined"] +
@@ -369,7 +322,6 @@ async def score_cvs(background_tasks: BackgroundTasks):
                 WEIGHTS["techskills"] * techskills_scores["combined"]
             )
 
-            # Determine match quality
             if final_score >= 80:
                 match_quality = "Excellent Match"
             elif final_score >= 65:
@@ -411,7 +363,6 @@ async def score_cvs(background_tasks: BackgroundTasks):
     successful_results = [r for r in results if "error" not in r]
     successful_results.sort(key=lambda x: x.get("final_score", 0), reverse=True)
 
-    # Relative scoring section for final_score
     if successful_results:
         max_score = successful_results[0]["final_score"]
         if max_score > 0:
@@ -420,7 +371,6 @@ async def score_cvs(background_tasks: BackgroundTasks):
         else:
             for r in successful_results:
                 r["relative_score"] = 0.0
-
 
     return {
         "ranked_candidates": successful_results,
@@ -436,7 +386,6 @@ async def score_cvs(background_tasks: BackgroundTasks):
             "processing_errors": processing_errors if processing_errors else None
         }
     }
-
 
 @app.post("/final-output/")
 async def final_output():
@@ -482,7 +431,7 @@ async def final_output():
                 score_data = cv_store.rag_engine.calculate_comprehensive_score(section_text, cv_store.jd)
                 semantic_score = score_data.get("final_score", 0.0) * 100
                 keyword_score = EnhancedRAGEngine.score_cv_by_semantic_keywords(
-                    section_text, jd_keywords_with_weights, cv_store.rag_engine.model, threshold=0.6
+                    section_text, jd_keywords_with_weights, cv_store.rag_engine.get_embedding, threshold=0.6
                 )
                 combined = EnhancedRAGEngine.combine_scores(semantic_score, keyword_score, 0.8, 0.2)
                 return {
@@ -523,7 +472,6 @@ async def final_output():
             logger.error(f"Error processing CV {cv_id}: {e}")
             continue
 
-    # --- Calculate relative section scores ---
     import numpy as np
     section_keys = ["cgpa", "experience", "projects", "technical_skills"]
     section_max = {}
@@ -545,12 +493,10 @@ async def final_output():
             rel_score = (score / max_score) * 100 if max_score > 0 else 0
             r["relative_sections"][key] = round(rel_score, 2)
 
-    # --- Calculate overall relative score ---
     max_final_score = max([r["final_score"] for r in results], default=1)
     for r in results:
         r["relative_score"] = round((r["final_score"] / max_final_score) * 100, 2) if max_final_score > 0 else 0
 
-    # --- Generate Pros and review ---
     def generate_pros_review_relative(cv_result):
         review = []
         rel = cv_result.get("relative_sections", {})
@@ -579,7 +525,6 @@ async def final_output():
     for r in results:
         r["pros_review"] = generate_pros_review_relative(r)
 
-    # --- Sort by relative_score descending ---
     results.sort(key=lambda x: x.get("relative_score", 0), reverse=True)
 
     return {
@@ -593,7 +538,6 @@ async def final_output():
             ),
         }
     }
-
 
 @app.delete("/clear-data/")
 async def clear_data():

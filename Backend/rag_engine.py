@@ -1,4 +1,5 @@
-from sentence_transformers import SentenceTransformer
+import os
+import requests
 import faiss
 import numpy as np
 import re
@@ -10,6 +11,10 @@ from functools import lru_cache
 
 logger = logging.getLogger(__name__)
 
+API_URL = "https://router.huggingface.co/hf-inference/models/sentence-transformers/all-MiniLM-L6-v2/pipeline/feature-extraction"
+HF_TOKEN = os.getenv("HF_TOKEN")
+HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
+
 @dataclass
 class ChunkConfig:
     chunk_size: int = 256
@@ -19,31 +24,67 @@ class ChunkConfig:
 
 class EnhancedRAGEngine:
     _instance = None
-    _model = None
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super(EnhancedRAGEngine, cls).__new__(cls)
-            if cls._model is None:
-                cls._model = SentenceTransformer("all-MiniLM-L6-v2")
         return cls._instance
 
-    def __init__(self, model_name: str = "all-MiniLM-L6-v2", chunk_config: ChunkConfig = None):
+    def __init__(self, chunk_config: ChunkConfig = None):
         if hasattr(self, 'initialized'):
             return
-        self.model = self._model
         self.chunk_config = chunk_config or ChunkConfig()
         self.dimension = 384
         self.initialized = True
 
     @lru_cache(maxsize=1000)
     def get_embedding(self, text: str) -> np.ndarray:
-        return self.model.encode(
-            [text], 
-            convert_to_numpy=True, 
-            normalize_embeddings=True,
-            show_progress_bar=False
-        ).astype('float32')
+        """Get embedding for a single string using Hugging Face API."""
+        if not text:
+            return np.zeros(self.dimension, dtype='float32')
+        response = requests.post(
+            API_URL,
+            headers=HEADERS,
+            json={"inputs": [text]}
+        )
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"Hugging Face API error: {response.text}")
+            raise e
+        embedding = response.json()
+        if isinstance(embedding[0], list) and isinstance(embedding[0][0], list):
+            embedding = embedding[0][0]
+        else:
+            embedding = embedding[0]
+        return np.array(embedding, dtype='float32')
+
+
+    @staticmethod
+    def get_embeddings(texts: List[str]) -> np.ndarray:
+        """Get embeddings for a list of strings using Hugging Face API."""
+        if not texts:
+            raise ValueError("No texts provided for embedding.")
+        
+        response = requests.post(
+            API_URL,
+            headers=HEADERS,
+            json={"inputs": texts}
+        )
+        try:
+            response.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"Hugging Face API error: {response.text}")
+            raise e
+        
+        embeddings = response.json()
+
+        # If API returns shape [N, 1, D], flatten it
+        if isinstance(embeddings[0], list) and isinstance(embeddings[0][0], list):
+            embeddings = [e[0] for e in embeddings]
+        
+        return np.array(embeddings, dtype='float32')
+
 
     def preprocess_text(self, text: str) -> str:
         if not text or not isinstance(text, str):
@@ -99,13 +140,7 @@ class EnhancedRAGEngine:
             if not batch:
                 continue
             
-            embeddings = self.model.encode(
-                batch, 
-                convert_to_numpy=True, 
-                normalize_embeddings=True,
-                show_progress_bar=False
-            ).astype('float32')
-            
+            embeddings = self.get_embeddings(batch)
             all_embeddings.append(embeddings)
             valid_chunks.extend(batch)
         
@@ -139,12 +174,7 @@ class EnhancedRAGEngine:
             
             for i in range(0, len(jd_chunks), batch_size):
                 batch = jd_chunks[i:i + batch_size]
-                batch_embeddings = self.model.encode(
-                    batch,
-                    convert_to_numpy=True,
-                    normalize_embeddings=True,
-                    show_progress_bar=False
-                ).astype('float32')
+                batch_embeddings = self.get_embeddings(batch)
                 
                 similarities = np.dot(batch_embeddings, cv_embeddings.T)
                 
@@ -188,7 +218,7 @@ class EnhancedRAGEngine:
         return keywords
 
     @staticmethod
-    def score_cv_by_semantic_keywords(cv_text, jd_keywords_with_weights, model, threshold=0.6):
+    def score_cv_by_semantic_keywords(cv_text, jd_keywords_with_weights, embedding_func, threshold=0.6):
         """
         Score CV using semantic similarity between JD keywords and CV sentences.
         """
@@ -196,13 +226,13 @@ class EnhancedRAGEngine:
         cv_sentences = [s.strip() for s in cv_sentences if s.strip()]
         if not cv_sentences:
             return 0.0
-        cv_embeddings = model.encode(cv_sentences)
+        cv_embeddings = np.array([embedding_func(s) for s in cv_sentences])
         total_weight = sum(weight for _, weight in jd_keywords_with_weights)
         if total_weight == 0:
             return 0.0
         matched_weight = 0.0
         for phrase, weight in jd_keywords_with_weights:
-            phrase_embedding = model.encode([phrase])
+            phrase_embedding = embedding_func(phrase)
             similarities = np.dot(cv_embeddings, phrase_embedding.T).flatten()
             max_similarity = np.max(similarities)
             if max_similarity >= threshold:
