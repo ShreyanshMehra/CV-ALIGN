@@ -2,6 +2,8 @@
 
 CV-ALIGN is an advanced tool that uses state-of-the-art Natural Language Processing (NLP) techniques to analyze and score the alignment between resumes/CVs and job descriptions. It provides detailed insights and matching scores to help job seekers optimize their applications and helps recruiters efficiently screen candidates.
 
+## Checkout the deployed version on Render : https://cv-align.onrender.com/
+
 ## 🚀 Features
 
 - **Semantic Analysis**: Uses advanced NLP models to understand context beyond simple keyword matching
